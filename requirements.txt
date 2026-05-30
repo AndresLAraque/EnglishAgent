@@ -1,0 +1,4 @@
+notion-client==1.0.1
+python-dotenv
+requests
+python-telegram-bot>=20.0
