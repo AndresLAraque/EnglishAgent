@@ -51,6 +51,9 @@ NOTION_TOKEN=ntn_your_integration_token
 NOTION_WORDS_DB=your_words_database_id
 NOTION_READINGS_DB=your_readings_database_id
 NOTION_ACTIVITY_DB=your_activity_database_id
+NOTION_TOPICS_DB=your_writing_topics_database_id
+NOTION_SUBMISSIONS_DB=your_writing_submissions_database_id
+NOTION_MISTAKES_DB=your_mistakes_bank_database_id
 
 # Telegram
 TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
@@ -59,6 +62,8 @@ TELEGRAM_CHAT_ID=your_telegram_user_id
 # Ollama
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen2.5:0.5b
+# Optional — use a different/bigger model just for grading writing submissions
+OLLAMA_WRITING_MODEL=qwen2.5:0.5b
 ```
 
 | Variable | Description |
@@ -67,10 +72,14 @@ OLLAMA_MODEL=qwen2.5:0.5b
 | `NOTION_WORDS_DB` | Created by `setup_notion.py` |
 | `NOTION_READINGS_DB` | Created by `setup_notion.py` |
 | `NOTION_ACTIVITY_DB` | Created by `setup_notion.py` |
+| `NOTION_TOPICS_DB` | Created by `setup_notion.py` — writing curriculum topics |
+| `NOTION_SUBMISSIONS_DB` | Created by `setup_notion.py` — graded writing texts |
+| `NOTION_MISTAKES_DB` | Created by `setup_notion.py` — mistake review bank |
 | `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/botfather) |
 | `TELEGRAM_CHAT_ID` | Your Telegram user ID (numeric) |
 | `OLLAMA_BASE_URL` | Ollama API endpoint (default: `http://127.0.0.1:11434`) |
 | `OLLAMA_MODEL` | Ollama model to use (default: `qwen2.5:0.5b`) |
+| `OLLAMA_WRITING_MODEL` | Model used to grade writing submissions (default: same as `OLLAMA_MODEL`) |
 
 ### 3. Create Notion databases
 
@@ -78,10 +87,13 @@ OLLAMA_MODEL=qwen2.5:0.5b
 python setup_notion.py
 ```
 
-Paste a parent page ID (a Notion page shared with your integration). This creates 3 databases:
+Paste a parent page ID (a Notion page shared with your integration). This creates 6 databases:
 - **English Vocabulary** — words, translations, status, stats
 - **Readings** — reading texts for vocabulary extraction
 - **Activity Log** — quiz results and timestamps
+- **Writing Topics** — the 5-week writing curriculum (seeded automatically)
+- **Writing Submissions** — your graded texts (score, corrections, feedback)
+- **Mistakes Bank** — individual mistakes pulled from graded texts, for spaced review
 
 ### 4. Pull the Ollama model
 
@@ -182,6 +194,7 @@ Talk to your bot on Telegram (@ImprovemyEnglish_bot):
 
 | Action | What happens |
 |--------|-------------|
+| `/menu` | Choose a study mode: vocabulary, writing practice, mistake review, or stats |
 | Send any English word | Bot saves it to Notion, asks AI for translation, replies with meaning |
 | `/quiz` | Generates 5 questions from your vocabulary with multiple choice |
 | `/correct <sentence>` | Fixes grammar mistakes |
@@ -189,6 +202,8 @@ Talk to your bot on Telegram (@ImprovemyEnglish_bot):
 | `/stats` | Shows your progress (mastered, learning, accuracy) |
 | `/recommend` | AI study recommendations based on weak words |
 | `/add <word>` | Manually add a word |
+| `/mistakes` | Review your writing mistakes as flashcards |
+| `/resettopics` | Start a new writing cycle once all topics are used |
 | `/start` or `/help` | Show help |
 
 ### Quiz Flow
@@ -203,6 +218,25 @@ Just send any English word like `perseverance` → bot automatically:
 - Asks AI for translation and meaning
 - Saves to Notion
 - Replies with the explanation
+
+### Writing Practice Flow
+
+The curriculum is a 5-week plan (topics like "Mi trabajo", "Tecnología", "Ensayos", "Historias"...) stored in the **Writing Topics** database.
+
+1. `/menu` → **✍️ Escritura** → pick a week → pick a topic
+2. Bot suggests a few connectors (Nevertheless, Moreover, Although...) and asks you to write about the topic
+3. Send your text as a message → the bot grades it with Ollama: score /100, each mistake shown as ❌ wrong → ✅ correct → 💡 explanation, the fully corrected text, and overall feedback
+4. The graded submission is saved to **Writing Submissions**, each mistake is saved to the **Mistakes Bank**, and the topic is marked as used
+5. Once every topic across all 5 weeks has been used, `/resettopics` (or the "🔄 Reiniciar ciclo" button) marks them all available again so you can repeat the plan
+
+### Mistake Review Flow
+
+`/menu` → **🔁 Repasar errores** (or `/mistakes` directly) pulls up to 5 not-yet-mastered mistakes from the **Mistakes Bank** as flashcards:
+
+1. Bot shows the ❌ wrong phrase
+2. Tap "🔍 Mostrar respuesta" → reveals ✅ the correction + explanation
+3. Tap "✅ Lo sabía" / "❌ No lo sabía" → updates that mistake's review stats in Notion (promoted to `mastered` after enough correct reviews)
+4. After the batch, the bot shows how many you remembered
 
 ## Docker Deployment (Raspberry Pi / ARM)
 

@@ -11,6 +11,9 @@ _NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 _WORDS_DB = os.getenv("NOTION_WORDS_DB", "")
 _READINGS_DB = os.getenv("NOTION_READINGS_DB", "")
 _ACTIVITY_DB = os.getenv("NOTION_ACTIVITY_DB", "")
+_TOPICS_DB = os.getenv("NOTION_TOPICS_DB", "")
+_SUBMISSIONS_DB = os.getenv("NOTION_SUBMISSIONS_DB", "")
+_MISTAKES_DB = os.getenv("NOTION_MISTAKES_DB", "")
 
 
 def _client() -> Client:
@@ -22,6 +25,19 @@ def _client() -> Client:
 
 def _rich_text(text: str) -> list:
     return [{"type": "text", "text": {"content": text}}]
+
+
+def _rich_text_long(text: str) -> list:
+    """Notion caps each rich_text object at 2000 chars; chunk longer text across multiple objects."""
+    if not text:
+        return []
+    chunks = [text[i:i + 2000] for i in range(0, len(text), 2000)]
+    return [{"type": "text", "text": {"content": c}} for c in chunks]
+
+
+def _relation_id(props: dict, key: str) -> str:
+    rel = props.get(key, {}).get("relation") or []
+    return rel[0]["id"] if rel else ""
 
 
 def _text_prop(props: dict, key: str, default: str = "") -> str:
@@ -271,3 +287,188 @@ def stats() -> dict:
         "total_wrong": total_wrong,
         "accuracy": accuracy,
     }
+
+
+# ─── WRITING TOPICS ────────────────────────────────────────────────
+
+
+def _topic_from_page(page: dict) -> dict:
+    p = page["properties"]
+    return {
+        "id": page["id"],
+        "name": _title_prop(p, "Name"),
+        "week": _num_prop(p, "Week"),
+        "status": _select_prop(p, "Status"),
+        "times_practiced": _num_prop(p, "Times Practiced"),
+        "last_practiced": _date_prop(p, "Last Practiced"),
+    }
+
+
+def topic_add(name: str, week: int) -> dict:
+    c = _client()
+    props = {
+        "Name": {"title": [{"text": {"content": name}}]},
+        "Week": {"number": week},
+        "Status": {"select": {"name": "available"}},
+        "Times Practiced": {"number": 0},
+    }
+    page = c.pages.create(parent={"database_id": _TOPICS_DB}, properties=props)
+    return _topic_from_page(page)
+
+
+def topic_list(week: Optional[int] = None, status: Optional[str] = None) -> list[dict]:
+    c = _client()
+    filters = []
+    if week is not None:
+        filters.append({"property": "Week", "number": {"equals": week}})
+    if status:
+        filters.append({"property": "Status", "select": {"equals": status}})
+    filter_obj = {"and": filters} if filters else None
+
+    res = c.databases.query(database_id=_TOPICS_DB, filter=filter_obj)
+    return [_topic_from_page(p) for p in res["results"]]
+
+
+def topic_get(topic_id: str) -> Optional[dict]:
+    c = _client()
+    page = c.pages.retrieve(topic_id)
+    return _topic_from_page(page)
+
+
+def topic_mark_used(topic_id: str):
+    c = _client()
+    topic = topic_get(topic_id)
+    today = date.today().isoformat()
+    c.pages.update(
+        page_id=topic_id,
+        properties={
+            "Status": {"select": {"name": "used"}},
+            "Times Practiced": {"number": topic["times_practiced"] + 1},
+            "Last Practiced": {"date": {"start": today}},
+        },
+    )
+
+
+def topic_reset_all():
+    c = _client()
+    res = c.databases.query(database_id=_TOPICS_DB)
+    for page in res["results"]:
+        c.pages.update(page_id=page["id"], properties={"Status": {"select": {"name": "available"}}})
+
+
+# ─── WRITING SUBMISSIONS ───────────────────────────────────────────
+
+
+def _submission_from_page(page: dict) -> dict:
+    p = page["properties"]
+    return {
+        "id": page["id"],
+        "name": _title_prop(p, "Name"),
+        "week": _num_prop(p, "Week"),
+        "topic_id": _relation_id(p, "Topic"),
+        "original_text": _text_prop(p, "Original Text"),
+        "corrected_text": _text_prop(p, "Corrected Text"),
+        "feedback": _text_prop(p, "Feedback"),
+        "score": _num_prop(p, "Score"),
+        "mistake_count": _num_prop(p, "Mistake Count"),
+        "date": _date_prop(p, "Date"),
+    }
+
+
+def submission_add(
+    topic: dict,
+    original_text: str,
+    corrected_text: str,
+    score: int,
+    feedback: str,
+    mistake_count: int,
+) -> dict:
+    c = _client()
+    today = date.today().isoformat()
+    name = f"Week{topic['week']} - {topic['name']} - {today}"
+    props = {
+        "Name": {"title": [{"text": {"content": name}}]},
+        "Week": {"number": topic["week"]},
+        "Topic": {"relation": [{"id": topic["id"]}]},
+        "Original Text": {"rich_text": _rich_text_long(original_text)},
+        "Corrected Text": {"rich_text": _rich_text_long(corrected_text)},
+        "Feedback": {"rich_text": _rich_text_long(feedback)},
+        "Score": {"number": score},
+        "Mistake Count": {"number": mistake_count},
+        "Date": {"date": {"start": today}},
+    }
+    page = c.pages.create(parent={"database_id": _SUBMISSIONS_DB}, properties=props)
+    return _submission_from_page(page)
+
+
+# ─── MISTAKES BANK ─────────────────────────────────────────────────
+
+
+def _mistake_from_page(page: dict) -> dict:
+    p = page["properties"]
+    return {
+        "id": page["id"],
+        "wrong": _text_prop(p, "Wrong"),
+        "correct": _text_prop(p, "Correct"),
+        "explanation": _text_prop(p, "Explanation"),
+        "category": _select_prop(p, "Category"),
+        "status": _select_prop(p, "Status"),
+        "times_reviewed": _num_prop(p, "Times Reviewed"),
+        "times_correct": _num_prop(p, "Times Correct"),
+        "date_added": _date_prop(p, "Date Added"),
+        "last_reviewed": _date_prop(p, "Last Reviewed"),
+        "submission_id": _relation_id(p, "Source Submission"),
+    }
+
+
+def mistake_add(wrong: str, correct: str, explanation: str, category: str, submission_id: str) -> dict:
+    c = _client()
+    today = date.today().isoformat()
+    title = wrong[:100] if wrong else "mistake"
+    props = {
+        "Name": {"title": [{"text": {"content": title}}]},
+        "Wrong": {"rich_text": _rich_text_long(wrong)},
+        "Correct": {"rich_text": _rich_text_long(correct)},
+        "Explanation": {"rich_text": _rich_text_long(explanation)},
+        "Category": {"select": {"name": category or "other"}},
+        "Status": {"select": {"name": "new"}},
+        "Times Reviewed": {"number": 0},
+        "Times Correct": {"number": 0},
+        "Date Added": {"date": {"start": today}},
+    }
+    if submission_id:
+        props["Source Submission"] = {"relation": [{"id": submission_id}]}
+    page = c.pages.create(parent={"database_id": _MISTAKES_DB}, properties=props)
+    return _mistake_from_page(page)
+
+
+def mistake_list(status: Optional[str] = None) -> list[dict]:
+    c = _client()
+    filter_obj = {"property": "Status", "select": {"equals": status}} if status else None
+    res = c.databases.query(database_id=_MISTAKES_DB, filter=filter_obj)
+    return [_mistake_from_page(p) for p in res["results"]]
+
+
+def mistake_update_review(mistake_id: str, remembered: bool):
+    c = _client()
+    mistake = _mistake_from_page(c.pages.retrieve(mistake_id))
+    today = date.today().isoformat()
+    reviewed = mistake["times_reviewed"] + 1
+    correct = mistake["times_correct"] + (1 if remembered else 0)
+
+    status = "reviewing"
+    if reviewed >= 3:
+        ratio = correct / reviewed
+        status = "mastered" if ratio >= 0.8 else "reviewing"
+    if not remembered:
+        status = "reviewing"
+
+    c.pages.update(
+        page_id=mistake_id,
+        properties={
+            "Times Reviewed": {"number": reviewed},
+            "Times Correct": {"number": correct},
+            "Last Reviewed": {"date": {"start": today}},
+            "Status": {"select": {"name": status}},
+        },
+    )

@@ -10,8 +10,12 @@ You need:
 3. The parent page ID (from the URL)
 """
 import os
+import sys
 from notion_client import Client
 from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+from english_agent import topics as topics_data  # noqa: E402
 
 load_dotenv()
 
@@ -102,14 +106,98 @@ def main():
         "Source Text": {"relation": {"database_id": readings_id, "type": "single_property", "single_property": {}}},
     })
 
+    # ── 4. Writing Topics database ──────────────────────────────
+    print("\nCreating 'Writing Topics' database...")
+    topics_id = create_database(client, parent_id, "Writing Topics", {
+        "Name": {"title": {}},
+        "Week": {"number": {}},
+        "Status": {"select": {"options": [
+            {"name": "available", "color": "green"},
+            {"name": "used", "color": "gray"},
+        ]}},
+        "Times Practiced": {"number": {}},
+        "Last Practiced": {"date": {}},
+    })
+    print(f"  ✅ Writing Topics DB ID: {topics_id}")
+
+    print("  Seeding topics from the 5-week curriculum...")
+    seeded = 0
+    for week, names in topics_data.WEEKS.items():
+        for name in names:
+            client.pages.create(
+                parent={"database_id": topics_id},
+                properties={
+                    "Name": {"title": [{"text": {"content": name}}]},
+                    "Week": {"number": week},
+                    "Status": {"select": {"name": "available"}},
+                    "Times Practiced": {"number": 0},
+                },
+            )
+            seeded += 1
+    print(f"  ✅ Seeded {seeded} topics")
+
+    # ── 5. Writing Submissions database ─────────────────────────
+    print("\nCreating 'Writing Submissions' database...")
+    submissions_id = create_database(client, parent_id, "Writing Submissions", {
+        "Name": {"title": {}},
+        "Week": {"number": {}},
+        "Original Text": {"rich_text": {}},
+        "Corrected Text": {"rich_text": {}},
+        "Feedback": {"rich_text": {}},
+        "Score": {"number": {}},
+        "Mistake Count": {"number": {}},
+        "Date": {"date": {}},
+    })
+    print(f"  ✅ Writing Submissions DB ID: {submissions_id}")
+
+    print("\nAdding Topic relation to Writing Submissions...")
+    client.databases.update(submissions_id, properties={
+        "Topic": {"relation": {"database_id": topics_id, "type": "single_property", "single_property": {}}},
+    })
+
+    # ── 6. Mistakes Bank database ───────────────────────────────
+    print("\nCreating 'Mistakes Bank' database...")
+    mistakes_id = create_database(client, parent_id, "Mistakes Bank", {
+        "Name": {"title": {}},
+        "Wrong": {"rich_text": {}},
+        "Correct": {"rich_text": {}},
+        "Explanation": {"rich_text": {}},
+        "Category": {"select": {"options": [
+            {"name": "grammar", "color": "red"},
+            {"name": "vocabulary", "color": "blue"},
+            {"name": "word-order", "color": "orange"},
+            {"name": "preposition", "color": "purple"},
+            {"name": "verb-tense", "color": "yellow"},
+            {"name": "other", "color": "gray"},
+        ]}},
+        "Status": {"select": {"options": [
+            {"name": "new", "color": "yellow"},
+            {"name": "reviewing", "color": "blue"},
+            {"name": "mastered", "color": "green"},
+        ]}},
+        "Times Reviewed": {"number": {}},
+        "Times Correct": {"number": {}},
+        "Date Added": {"date": {}},
+        "Last Reviewed": {"date": {}},
+    })
+    print(f"  ✅ Mistakes Bank DB ID: {mistakes_id}")
+
+    print("\nAdding Source Submission relation to Mistakes Bank...")
+    client.databases.update(mistakes_id, properties={
+        "Source Submission": {"relation": {"database_id": submissions_id, "type": "single_property", "single_property": {}}},
+    })
+
     print()
     print("=" * 60)
-    print("All 3 databases created successfully!")
+    print("All 6 databases created successfully!")
     print()
     print("Add these to your .env file:")
     print(f"NOTION_WORDS_DB={words_id}")
     print(f"NOTION_READINGS_DB={readings_id}")
     print(f"NOTION_ACTIVITY_DB={activity_id}")
+    print(f"NOTION_TOPICS_DB={topics_id}")
+    print(f"NOTION_SUBMISSIONS_DB={submissions_id}")
+    print(f"NOTION_MISTAKES_DB={mistakes_id}")
     print("=" * 60)
 
 
