@@ -11,7 +11,7 @@ def random_connectors(count: int = 3) -> list[str]:
     return random.sample(topics.CONNECTORS, min(count, len(topics.CONNECTORS)))
 
 
-def grade_and_save(topic: dict, text: str) -> dict:
+def grade_and_save(topic: dict, text: str, user_id: int = 0) -> dict:
     result = llm.grade_writing(topic["name"], text)
 
     score = result.get("score", 0)
@@ -27,6 +27,8 @@ def grade_and_save(topic: dict, text: str) -> dict:
         score=score,
         feedback=feedback,
         mistake_count=len(mistakes),
+        strengths=strengths,
+        user_id=user_id,
     )
 
     for m in mistakes:

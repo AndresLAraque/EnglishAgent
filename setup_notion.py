@@ -146,6 +146,16 @@ def main():
         "Feedback": {"rich_text": {}},
         "Score": {"number": {}},
         "Mistake Count": {"number": {}},
+        "Strengths": {"rich_text": {}},
+        "Hour": {"number": {}},
+        "Provider": {"select": {"options": [
+            {"name": "deepseek", "color": "blue"},
+            {"name": "ollama", "color": "green"},
+        ]}},
+        "AI Model": {"select": {"options": [
+            {"name": "deepseek-chat", "color": "blue"},
+        ]}},
+        "User ID": {"number": {}},
         "Date": {"date": {}},
     })
     print(f"  ✅ Writing Submissions DB ID: {submissions_id}")

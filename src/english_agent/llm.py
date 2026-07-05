@@ -7,15 +7,66 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ─── providers ──────────────────────────────────────────────────────
+
+PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_OLLAMA = "ollama"
+
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:0.5b")
 WRITING_MODEL = os.getenv("OLLAMA_WRITING_MODEL", OLLAMA_MODEL)
 
+# Which provider to prefer ("deepseek" or "ollama")
+_ACTIVE_PROVIDER: str = os.getenv("LLM_PROVIDER", PROVIDER_DEEPSEEK if DEEPSEEK_API_KEY else PROVIDER_OLLAMA)
+_ACTIVE_MODEL: str = ""
 
-SYSTEM_PROMPT = "You are an English tutor for Spanish speakers. Only use English and Spanish. Never use Chinese or any other language."
+SYSTEM_PROMPT = "You are an English tutor. Respond exclusively in English. Never use Spanish or any other language."
 
 
-def _chat(messages: list[dict], model: Optional[str] = None, **kwargs) -> str:
+def get_active_provider() -> str:
+    return _ACTIVE_PROVIDER
+
+
+def get_active_model() -> str:
+    if _ACTIVE_MODEL:
+        return _ACTIVE_MODEL
+    if _ACTIVE_PROVIDER == PROVIDER_DEEPSEEK:
+        return DEEPSEEK_MODEL
+    return OLLAMA_MODEL
+
+
+def set_provider(provider: str) -> bool:
+    global _ACTIVE_PROVIDER, _ACTIVE_MODEL
+    provider = provider.lower()
+    if provider == PROVIDER_DEEPSEEK:
+        if not DEEPSEEK_API_KEY:
+            return False
+        _ACTIVE_PROVIDER = PROVIDER_DEEPSEEK
+        _ACTIVE_MODEL = ""
+        return True
+    if provider == PROVIDER_OLLAMA:
+        _ACTIVE_PROVIDER = PROVIDER_OLLAMA
+        _ACTIVE_MODEL = ""
+        return True
+    return False
+
+
+def list_models() -> list[dict]:
+    models = []
+    if DEEPSEEK_API_KEY:
+        models.append({"id": PROVIDER_DEEPSEEK, "name": f"DeepSeek ({DEEPSEEK_MODEL})", "available": True})
+    models.append({"id": PROVIDER_OLLAMA, "name": f"Ollama ({OLLAMA_MODEL})", "available": True})
+    return models
+
+
+# ─── internal chat functions ────────────────────────────────────────
+
+
+def _chat_ollama(messages: list[dict], model: Optional[str] = None, **kwargs) -> str:
     url = f"{OLLAMA_BASE_URL}/api/chat"
     full = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
     payload = {
@@ -27,6 +78,47 @@ def _chat(messages: list[dict], model: Optional[str] = None, **kwargs) -> str:
     resp = requests.post(url, json=payload, timeout=120)
     resp.raise_for_status()
     return resp.json()["message"]["content"]
+
+
+def _chat_deepseek(messages: list[dict], model: Optional[str] = None, **kwargs) -> str:
+    url = f"{DEEPSEEK_BASE_URL}/chat/completions"
+    full = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+    payload = {
+        "model": model or DEEPSEEK_MODEL,
+        "messages": full,
+        "stream": False,
+        "max_tokens": kwargs.get("max_tokens", 300),
+    }
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    resp = requests.post(url, json=payload, headers=headers, timeout=120)
+    if resp.status_code in (401, 402, 403, 429):
+        error_body = resp.json()
+        error_msg = error_body.get("error", {}).get("message", resp.text)
+        raise RuntimeError(f"deepseek_quota_exceeded|{error_msg}")
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def _chat(messages: list[dict], model: Optional[str] = None, **kwargs) -> str:
+    if _ACTIVE_PROVIDER == PROVIDER_DEEPSEEK:
+        try:
+            return _chat_deepseek(messages, model=model, **kwargs)
+        except RuntimeError as e:
+            err_str = str(e)
+            if err_str.startswith("deepseek_quota_exceeded"):
+                print(f"[llm] DeepSeek quota exhausted, falling back to Ollama: {err_str}")
+                return _chat_ollama(messages, model=model, **kwargs)
+            raise
+        except requests.RequestException as e:
+            print(f"[llm] DeepSeek request failed, falling back to Ollama: {e}")
+            return _chat_ollama(messages, model=model, **kwargs)
+    return _chat_ollama(messages, model=model, **kwargs)
+
+
+# ─── parsing ────────────────────────────────────────────────────────
 
 
 def _parse(content: str) -> dict:
@@ -41,9 +133,12 @@ def _parse(content: str) -> dict:
         return {"raw": content}
 
 
+# ─── public API ─────────────────────────────────────────────────────
+
+
 def explain_word(word: str, translation: str) -> dict:
     prompt = (
-        f"Explain the word '{word}' ({translation} in Spanish). "
+        f"Explain the English word '{word}' (translation: {translation}). "
         f"Return ONLY valid JSON with these exact keys: "
         f"explanation, translation, example, synonyms. "
         f"No other text."

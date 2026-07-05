@@ -1,85 +1,57 @@
 # EnglishAgent
 
-Personal English vocabulary learning assistant powered by **Ollama** + **Notion** + **Telegram**.
+Personal English learning assistant powered by **AI (DeepSeek / Ollama)** + **Notion** + **Telegram**.
 
-Uses `qwen2.5:0.5b` locally via Ollama for AI features (sentence correction, word explanations, study recommendations). Vocabulary, readings, and progress are stored in Notion. Telegram delivers notifications.
+## Features
+
+- 🤖 **Dual AI provider**: DeepSeek (cloud) with auto-fallback to Ollama (local) when quota runs out
+- 📚 **Vocabulary**: Send any English word → auto-saves with AI translation, explanation, examples, synonyms
+- ✍️ **Writing practice**: 5-week curriculum with topics, AI grading (score/100), mistake-by-mistake feedback, corrected version
+- 🔁 **Mistake review**: Spaced-repetition flashcards from your writing mistakes
+- 📊 **Progress tracking**: Stats on words mastered, accuracy, writing topics completed
+- ⏰ **Daily reminders**: Scheduled study reminders and weekly writing challenges via Telegram
+- 🔄 **Multi-user**: No user restrictions — anyone who finds the bot can use it
 
 ## Architecture
 
 ```
-You (CLI or Telegram)
-  │
-  ├─▶ english-agent correct "I go to school yesterday"
-  ├─▶ english-agent explain "perseverance"
-  ├─▶ english-agent word add "hello" "hola"
-  ├─▶ english-agent quiz generate --count 10
-  └─▶ english-agent notify send "Study time!"
-          │
-          ├─▶ Ollama + qwen2.5:0.5b (AI commands)
-          └─▶ Notion API (words, readings, activity logs)
+Telegram Bot ←→ Python (python-telegram-bot)
+                    ├── DeepSeek API (primary AI) ──→ fallback ──→ Ollama (local)
+                    ├── Notion API (all data storage)
+                    └── JobQueue (daily/weekly reminders)
 ```
-
-## Requirements
-
-- Python 3.10+
-- [Ollama](https://ollama.com) + `qwen2.5:0.5b` model
-- Notion integration token
-- Telegram bot token (for notifications)
 
 ## Setup
 
-### 1. Install the Python package
+### 1. Install
 
 ```bash
-cd EnglishAgent
-python -m venv .venv
-source .venv/bin/activate
+git clone <repo> && cd EnglishAgent
+python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-### 2. Configure .env
+### 2. Configure `.env`
 
 ```bash
 cp .env.example .env
+# Edit with your tokens
 ```
 
-Edit `.env` with your tokens. It should look like:
-
-```env
-# Notion
-NOTION_TOKEN=ntn_your_integration_token
-NOTION_WORDS_DB=your_words_database_id
-NOTION_READINGS_DB=your_readings_database_id
-NOTION_ACTIVITY_DB=your_activity_database_id
-NOTION_TOPICS_DB=your_writing_topics_database_id
-NOTION_SUBMISSIONS_DB=your_writing_submissions_database_id
-NOTION_MISTAKES_DB=your_mistakes_bank_database_id
-
-# Telegram
-TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
-TELEGRAM_CHAT_ID=your_telegram_user_id
-
-# Ollama
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=qwen2.5:0.5b
-# Optional — use a different/bigger model just for grading writing submissions
-OLLAMA_WRITING_MODEL=qwen2.5:0.5b
-```
-
-| Variable | Description |
-|----------|-------------|
-| `NOTION_TOKEN` | Notion integration token (starts with `ntn_`) |
-| `NOTION_WORDS_DB` | Created by `setup_notion.py` |
-| `NOTION_READINGS_DB` | Created by `setup_notion.py` |
-| `NOTION_ACTIVITY_DB` | Created by `setup_notion.py` |
-| `NOTION_TOPICS_DB` | Created by `setup_notion.py` — writing curriculum topics |
-| `NOTION_SUBMISSIONS_DB` | Created by `setup_notion.py` — graded writing texts |
-| `NOTION_MISTAKES_DB` | Created by `setup_notion.py` — mistake review bank |
-| `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/botfather) |
-| `TELEGRAM_CHAT_ID` | Your Telegram user ID (numeric) |
-| `OLLAMA_BASE_URL` | Ollama API endpoint (default: `http://127.0.0.1:11434`) |
-| `OLLAMA_MODEL` | Ollama model to use (default: `qwen2.5:0.5b`) |
-| `OLLAMA_WRITING_MODEL` | Model used to grade writing submissions (default: same as `OLLAMA_MODEL`) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NOTION_TOKEN` | ✅ | Notion integration token (starts with `ntn_`) |
+| `NOTION_WORDS_DB` | ✅ | Vocabulary database ID |
+| `NOTION_READINGS_DB` | ✅ | Readings database ID |
+| `NOTION_ACTIVITY_DB` | ✅ | Quiz activity log database ID |
+| `NOTION_TOPICS_DB` | ✅ | Writing topics database ID |
+| `NOTION_SUBMISSIONS_DB` | ✅ | Writing submissions database ID |
+| `NOTION_MISTAKES_DB` | ✅ | Mistakes bank database ID |
+| `TELEGRAM_BOT_TOKEN` | ✅ | From [@BotFather](https://t.me/botfather) |
+| `TELEGRAM_CHAT_ID` | ✅ | Your Telegram numeric user ID |
+| `DEEPSEEK_API_KEY` | ❌ | DeepSeek API key (sk-...) |
+| `OLLAMA_BASE_URL` | ❌ | `http://127.0.0.1:11434` (default) |
+| `OLLAMA_MODEL` | ❌ | `qwen2.5:0.5b` (default) |
 
 ### 3. Create Notion databases
 
@@ -87,199 +59,126 @@ OLLAMA_WRITING_MODEL=qwen2.5:0.5b
 python setup_notion.py
 ```
 
-Paste a parent page ID (a Notion page shared with your integration). This creates 6 databases:
-- **English Vocabulary** — words, translations, status, stats
-- **Readings** — reading texts for vocabulary extraction
-- **Activity Log** — quiz results and timestamps
-- **Writing Topics** — the 5-week writing curriculum (seeded automatically)
-- **Writing Submissions** — your graded texts (score, corrections, feedback)
-- **Mistakes Bank** — individual mistakes pulled from graded texts, for spaced review
+Paste a parent page ID shared with your integration → creates 6 databases.
 
-### 4. Pull the Ollama model
+### 4. (Optional) Pull Ollama model
 
 ```bash
 ollama pull qwen2.5:0.5b
-```
-
-Make sure Ollama is running:
-```bash
 ollama serve
 ```
 
 ## CLI Reference
 
-All commands output JSON.
-
-### AI Commands (powered by Ollama)
+All commands output JSON. Useful for scripting or testing.
 
 ```bash
-# Correct a sentence with grammar explanation
+# AI
 english-agent correct "She go to school every day"
-
-# Explain a word from your vocabulary
 english-agent explain "perseverance"
-
-# Get AI study recommendations (based on weak words)
 english-agent recommend
-```
 
-### Words
-
-```bash
-english-agent word add "ubiquitous" "omnipresente" --definition "present everywhere"
+# Words
+english-agent word add "ubiquitous" "omnipresente"
 english-agent word list --status learning
 english-agent word get "ubiquitous"
 english-agent word delete "ubiquitous"
-```
 
-### Quiz
-
-```bash
+# Quiz
 english-agent quiz generate --count 10
 english-agent quiz evaluate <word_id> --correct true
-english-agent quiz evaluate <word_id> --correct false
-```
 
-### Readings
-
-```bash
-english-agent reading add "Article Title" "Full text content here..."
+# Readings
+english-agent reading add "Title" "Full text..."
 english-agent reading list
 english-agent reading extract <reading_id> --max 20
-```
 
-### Analytics
-
-```bash
+# Stats & Analysis
 english-agent stats
 english-agent analyze time --days 30
 english-agent analyze weak --min-attempts 2
+
+# Notify
+english-agent notify "Time to study!"
 ```
 
-### Notifications
+## Telegram Bot Commands
 
-```bash
-english-agent notify "Time for your daily quiz!"
-```
+Talk to the bot on Telegram:
 
-## Telegram Bot (Interactive)
-
-The bot runs as a systemd service and responds to you on Telegram.
-
-### Start the bot — native (systemd)
-
-```bash
-systemctl --user start english-bot
-systemctl --user enable english-bot  # auto-start on boot
-```
-
-### Start the bot — Docker (Raspberry Pi / ARM)
-
-```bash
-# Build and run both Ollama + bot
-docker compose up -d
-
-# Pull the model inside the container
-docker exec english-ollama ollama pull qwen2.5:0.5b
-
-# View logs
-docker compose logs -f bot
-```
-
-For Raspberry Pi (ARM64), the compose file uses the official `ollama/ollama` image which supports ARM natively. The bot container builds from `python:3.11-slim-bookworm` (multi-arch).
-
-### Bot Commands
-
-Talk to your bot on Telegram (@ImprovemyEnglish_bot):
-
-| Action | What happens |
-|--------|-------------|
-| `/menu` | Choose a study mode: vocabulary, writing practice, mistake review, or stats |
-| Send any English word | Bot saves it to Notion, asks AI for translation, replies with meaning |
-| `/quiz` | Generates 5 questions from your vocabulary with multiple choice |
-| `/correct <sentence>` | Fixes grammar mistakes |
-| `/explain <word>` | Shows AI explanation for a saved word |
-| `/stats` | Shows your progress (mastered, learning, accuracy) |
-| `/recommend` | AI study recommendations based on weak words |
-| `/add <word>` | Manually add a word |
-| `/mistakes` | Review your writing mistakes as flashcards |
-| `/resettopics` | Start a new writing cycle once all topics are used |
-| `/start` or `/help` | Show help |
-
-### Quiz Flow
-
-1. Send `/quiz` → bot sends question 1/5 with buttons
-2. Tap an answer → bot tells you if correct, records the result
-3. After question 5 → bot shows your score + overall progress
-
-### Auto Save
-
-Just send any English word like `perseverance` → bot automatically:
-- Asks AI for translation and meaning
-- Saves to Notion
-- Replies with the explanation
+| Command | Description |
+|---------|-------------|
+| `/start` or `/help` | Show help with current AI model |
+| `/menu` | Choose study mode: Vocabulary, Writing, Mistake Review, Stats |
+| Send any English word | Auto-saves with AI translation + explanation |
+| `/add <word> [translation]` | Manually add a word |
+| `/quiz` | 5-question vocabulary test |
+| `/correct <sentence>` | Fix grammar mistakes |
+| `/explain <word>` | AI explanation of a saved word |
+| `/stats` | Your learning progress |
+| `/recommend` | AI study tips based on weak words |
+| `/mistakes` | Flashcard review of writing mistakes |
+| `/model` | Switch between DeepSeek and Ollama |
+| `/reminder [HH:MM]` | View/set daily reminder time |
+| `/resettopics` | Reset all writing topics for a new cycle |
 
 ### Writing Practice Flow
 
-The curriculum is a 5-week plan (topics like "Mi trabajo", "Tecnología", "Ensayos", "Historias"...) stored in the **Writing Topics** database.
-
-1. `/menu` → **✍️ Escritura** → pick a week → pick a topic
-2. Bot suggests a few connectors (Nevertheless, Moreover, Although...) and asks you to write about the topic
-3. Send your text as a message → the bot grades it with Ollama: score /100, each mistake shown as ❌ wrong → ✅ correct → 💡 explanation, the fully corrected text, and overall feedback
-4. The graded submission is saved to **Writing Submissions**, each mistake is saved to the **Mistakes Bank**, and the topic is marked as used
-5. Once every topic across all 5 weeks has been used, `/resettopics` (or the "🔄 Reiniciar ciclo" button) marks them all available again so you can repeat the plan
+1. `/menu` → **✍️ Writing** → pick a week → pick a topic
+2. Bot suggests connectors (Nevertheless, Moreover...) and you write a text
+3. Send your text → AI grades it: score/100, each mistake shown as ❌ → ✅ → 💡, corrected version, overall feedback
+4. Everything saved to Notion: original text, corrected text, score, mistakes, strengths, AI model used, hour, user ID
+5. All topics done? Use `/resettopics` or tap "🔄 Reset cycle"
 
 ### Mistake Review Flow
 
-`/menu` → **🔁 Repasar errores** (or `/mistakes` directly) pulls up to 5 not-yet-mastered mistakes from the **Mistakes Bank** as flashcards:
+1. `/menu` → **🔁 Mistake Review** (or `/mistakes`)
+2. Bot shows ❌ wrong phrase → tap "🔍 Show answer" → reveals ✅ correction
+3. Tap "✅ I knew it" or "❌ I didn't know" → updates spaced-repetition stats
+4. After 3 correct reviews → mistake promoted to `mastered`
 
-1. Bot shows the ❌ wrong phrase
-2. Tap "🔍 Mostrar respuesta" → reveals ✅ the correction + explanation
-3. Tap "✅ Lo sabía" / "❌ No lo sabía" → updates that mistake's review stats in Notion (promoted to `mastered` after enough correct reviews)
-4. After the batch, the bot shows how many you remembered
+### Model Selection
 
-## Docker Deployment (Raspberry Pi / ARM)
+Use `/model` to switch between providers:
 
-The project includes a `docker-compose.yml` with two services:
+- **DeepSeek** (cloud): Faster, smarter — needs `DEEPSEEK_API_KEY` in `.env`
+- **Ollama** (local): Runs locally, no API costs — needs Ollama running
 
-| Service | Image | Role |
-|---------|-------|------|
-| `ollama` | `ollama/ollama:latest` | Runs `qwen2.5:0.5b` on ARM64 natively |
-| `bot` | built from `Dockerfile` | Python bot + Notion client |
+If DeepSeek quota is exhausted, the bot **automatically falls back** to Ollama.
+
+### Daily Reminders
+
+Set a daily reminder with `/reminder 20:00` (or any HH:MM). The bot will send:
+- Daily study reminder at your chosen time
+- Weekly writing topic suggestion every Monday at 9:00
+
+## Notion Database Schema
+
+Each database is documented below. Create them via `python setup_notion.py`.
+
+### English Vocabulary
+`Word` (title), `Translation`, `Definition`, `Example`, `Status` (learning/reviewing/mastered/forgotten), `Tags`, `Times Correct`, `Times Wrong`, `Date Added`, `Last Reviewed`, `Source` (manual/extracted)
+
+### Writing Submissions
+`Name` (title), `Week`, `Topic` (relation), `Original Text`, `Corrected Text`, `Feedback`, `Score`, `Mistake Count`, `Strengths`, `Hour`, `Provider`, `AI Model`, `User ID`, `Date`
+
+### Mistakes Bank
+`Name` (title), `Wrong`, `Correct`, `Explanation`, `Category` (grammar/vocabulary/word-order/...), `Status` (new/reviewing/mastered), `Times Reviewed`, `Times Correct`, `Date Added`, `Last Reviewed`, `Source Submission` (relation)
+
+Also: **Readings**, **Activity Log**, **Writing Topics** (auto-seeded with 5-week curriculum).
+
+## Docker
 
 ```bash
-# On your Raspberry Pi (64-bit OS required):
-git clone https://github.com/AiLinknfc/learning-english-agent.git
-cd learning-english-agent
-
-# Configure secrets
-cp .env.example .env
-# Edit .env with your Notion + Telegram tokens
-
-# Start everything
 docker compose up -d
-
-# Pull the model (one-time)
 docker exec english-ollama ollama pull qwen2.5:0.5b
-
-# Check logs
-docker compose logs -f bot
 ```
 
-> **Note:** Ollama runs *inside* the container, so model inference shares resources with the container. For better performance on RPi, run Ollama natively and only containerize the bot.
+Works on Raspberry Pi (ARM64).
 
 ## Portability
 
-This runs on low-power devices (Raspberry Pi, old laptops) with:
-- `qwen2.5:0.5b` (~400MB RAM, ~400MB disk)
-- Python + notion-client (~50MB)
-- Total footprint ~1GB
-
-To move to a new device:
-1. Copy `.env` — your data stays in Notion
-2. Install Ollama + pull the model (or use Docker)
-3. Run the bot (native or container)
-
-## Repository
-
-Source code: https://github.com/AiLinknfc/learning-english-agent
+Data stays in Notion. To move to a new device:
+1. Copy `.env`
+2. Install Ollama or configure DeepSeek
+3. Run the bot

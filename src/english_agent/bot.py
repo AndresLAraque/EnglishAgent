@@ -9,6 +9,8 @@ from telegram.ext import (
 )
 
 from . import notion_db, llm, quiz_engine, analyzer, writing_engine
+from . import notify as notify_mod
+from . import scheduler
 
 load_dotenv()
 
@@ -27,8 +29,11 @@ REVIEW_STATE: dict[int, dict] = {}
 
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    model_name = llm.get_active_model()
+    provider = llm.get_active_provider()
     await update.message.reply_text(
-        "Hello! I'm your English tutor. Here's what I can do:\n\n"
+        f"Hello! I'm your English tutor.\n"
+        f"🤖 Model: {provider} ({model_name})\n\n"
         "• /menu — Choose a study mode (vocabulary, writing, mistake review)\n"
         "• Send any English word → I save it and explain it\n"
         "• /quiz — Test your vocabulary\n"
@@ -37,6 +42,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• /recommend — Study tips\n"
         "• /explain <word> — Explain a saved word\n"
         "• /mistakes — Review your writing mistakes\n"
+        "• /model — Switch AI model\n"
         "• /help — Show this message"
     )
 
@@ -343,14 +349,52 @@ def _chunk_text(text: str, size: int = 3500) -> list[str]:
 # ─── STUDY MENU ────────────────────────────────────────────────────
 
 
+async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    models = llm.list_models()
+    current = llm.get_active_provider()
+    buttons = []
+    for m in models:
+        label = f"{'✅ ' if m['id'] == current else ''}{m['name']}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"model_{m['id']}")])
+    buttons.append([InlineKeyboardButton("❌ Close", callback_data="model_close")])
+    await update.message.reply_text(
+        f"🤖 *Current model:* {current} ({llm.get_active_model()})\n\nSelect a model:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
+
+async def model_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "model_close":
+        await query.edit_message_text("✅ No changes made.")
+        return
+    provider = data.split("_", 1)[1]
+    if llm.set_provider(provider):
+        await query.edit_message_text(
+            f"✅ Switched to *{provider}* ({llm.get_active_model()}).",
+            parse_mode="Markdown",
+        )
+    else:
+        await query.edit_message_text("❌ Could not switch. Did you set the API key in .env?")
+
+
 async def cmd_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    provider = llm.get_active_provider()
+    model_name = llm.get_active_model()
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📚 Vocabulario", callback_data="mode_vocab")],
-        [InlineKeyboardButton("✍️ Escritura", callback_data="mode_write")],
-        [InlineKeyboardButton("🔁 Repasar errores", callback_data="mode_review")],
+        [InlineKeyboardButton("📚 Vocabulary", callback_data="mode_vocab")],
+        [InlineKeyboardButton("✍️ Writing", callback_data="mode_write")],
+        [InlineKeyboardButton("🔁 Mistake Review", callback_data="mode_review")],
         [InlineKeyboardButton("📊 Stats", callback_data="mode_stats")],
     ])
-    await update.message.reply_text("¿Cómo quieres estudiar hoy?", reply_markup=keyboard)
+    await update.message.reply_text(
+        f"🤖 *{provider}* — _{model_name}_\n\nHow would you like to study today?",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
 
 
 async def show_week_menu(query):
@@ -358,7 +402,7 @@ async def show_week_menu(query):
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(f"Week {w}", callback_data=f"week_{w}")] for w in weeks]
     )
-    await query.edit_message_text("✍️ Elige una semana:", reply_markup=keyboard)
+    await query.edit_message_text("✍️ Pick a week:", reply_markup=keyboard)
 
 
 async def send_combined_stats(query):
@@ -370,16 +414,16 @@ async def send_combined_stats(query):
         all_mistakes = notion_db.mistake_list()
         mastered = sum(1 for m in all_mistakes if m["status"] == "mastered")
         writing_line = (
-            f"\n*Escritura:*\n"
-            f"Temas completados: {used}/{len(all_topics)}\n"
-            f"Errores dominados: {mastered}/{len(all_mistakes)}\n"
+            f"\n*Writing:*\n"
+            f"Topics completed: {used}/{len(all_topics)}\n"
+            f"Mistakes mastered: {mastered}/{len(all_mistakes)}\n"
         )
     except Exception:
         pass
 
     msg = (
-        f"📊 *Tu Progreso*\n\n"
-        f"*Vocabulario:*\n"
+        f"📊 *Your Progress*\n\n"
+        f"*Vocabulary:*\n"
         f"Total: {s['total']} | Mastered: {s['mastered']} | Accuracy: {s['accuracy']}%\n"
         f"{writing_line}"
     )
@@ -393,13 +437,13 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if mode == "mode_vocab":
         await query.edit_message_text(
-            "📚 *Modo Vocabulario*\n\n"
-            "• Envía cualquier palabra en inglés para guardarla\n"
-            "• /quiz — Pon a prueba tu vocabulario\n"
-            "• /correct <frase> — Corrige gramática\n"
-            "• /explain <palabra> — Explica una palabra guardada\n"
-            "• /recommend — Consejos de estudio\n"
-            "• /add <palabra> — Agrega manualmente",
+            "📚 *Vocabulary Mode*\n\n"
+            "• Send any English word to save it\n"
+            "• /quiz — Test your vocabulary\n"
+            "• /correct <sentence> — Fix grammar\n"
+            "• /explain <word> — Explain a saved word\n"
+            "• /recommend — Study tips\n"
+            "• /add <word> — Add manually",
             parse_mode="Markdown",
         )
     elif mode == "mode_write":
@@ -426,7 +470,7 @@ async def week_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if not entries:
-        await query.edit_message_text(f"No hay temas para la Week {week} todavía.")
+        await query.edit_message_text(f"No topics for Week {week} yet.")
         return
 
     buttons = [
@@ -438,10 +482,10 @@ async def week_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]
 
     if all_topics and all(t["status"] == "used" for t in all_topics):
-        buttons.append([InlineKeyboardButton("🔄 Reiniciar ciclo", callback_data="resettopics")])
+        buttons.append([InlineKeyboardButton("🔄 Reset cycle", callback_data="resettopics")])
 
     await query.edit_message_text(
-        f"✍️ *Week {week}* — elige un tema:",
+        f"✍️ *Week {week}* — pick a topic:",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown",
     )
@@ -463,8 +507,8 @@ async def topic_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     msg = (
         f"✍️ *{topic['name']}*\n\n"
-        f"Escribe tu texto sobre este tema y envíalo como mensaje.\n\n"
-        f"💡 Intenta usar: {', '.join(connectors)}"
+        f"Write your text about this topic and send it as a message.\n\n"
+        f"💡 Try using: {', '.join(connectors)}"
     )
     await query.edit_message_text(msg, parse_mode="Markdown")
 
@@ -474,7 +518,7 @@ async def reset_topics_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     try:
         writing_engine.reset_cycle()
-        await query.edit_message_text("🔄 Ciclo reiniciado. Todos los temas están disponibles de nuevo. Usa /menu para empezar.")
+        await query.edit_message_text("🔄 Cycle reset. All topics are available again. Use /menu to start.")
     except Exception as e:
         await query.edit_message_text(f"Error: {e}")
 
@@ -482,7 +526,7 @@ async def reset_topics_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_reset_topics(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         writing_engine.reset_cycle()
-        await update.message.reply_text("🔄 Ciclo reiniciado. Todos los temas están disponibles de nuevo.")
+        await update.message.reply_text("🔄 Cycle reset. All topics are available again.")
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
@@ -491,9 +535,9 @@ async def handle_writing_submission(update: Update, ctx: ContextTypes.DEFAULT_TY
     uid = update.effective_user.id
     topic = WRITING_STATE.pop(uid)["topic"]
 
-    await update.message.reply_text("⏳ Calificando tu texto...")
+    await update.message.reply_text("⏳ Grading your text...")
     try:
-        result = writing_engine.grade_and_save(topic, text)
+        result = writing_engine.grade_and_save(topic, text, user_id=uid)
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
         return
@@ -502,7 +546,7 @@ async def handle_writing_submission(update: Update, ctx: ContextTypes.DEFAULT_TY
     msg = f"📊 *Score: {result['score']}/100*\n\n"
 
     if mistakes:
-        msg += "*Errores encontrados:*\n\n"
+        msg += "*Mistakes found:*\n\n"
         for m in mistakes[:8]:
             msg += (
                 f"❌ {m.get('wrong', '')}\n"
@@ -510,9 +554,9 @@ async def handle_writing_submission(update: Update, ctx: ContextTypes.DEFAULT_TY
                 f"💡 {m.get('explanation', '')}\n\n"
             )
         if len(mistakes) > 8:
-            msg += f"_+{len(mistakes) - 8} más guardados en tu banco de errores_\n\n"
+            msg += f"_+{len(mistakes) - 8} more saved to your mistake bank_\n\n"
     else:
-        msg += "🎉 ¡No se encontraron errores!\n\n"
+        msg += "🎉 No mistakes found!\n\n"
 
     if result.get("feedback"):
         msg += f"💬 *Feedback:* {result['feedback']}"
@@ -522,7 +566,7 @@ async def handle_writing_submission(update: Update, ctx: ContextTypes.DEFAULT_TY
     corrected = result.get("corrected_text", "")
     if corrected:
         for i, chunk in enumerate(_chunk_text(corrected)):
-            title = "📝 *Texto corregido:*\n" if i == 0 else ""
+            title = "📝 *Corrected text:*\n" if i == 0 else ""
             await update.message.reply_text(f"{title}{chunk}", parse_mode="Markdown")
 
 
@@ -542,7 +586,7 @@ async def start_review(uid: int, send):
         return
 
     if not queue:
-        await send("🎉 ¡No hay errores pendientes para repasar! Sigue escribiendo 💪")
+        await send("🎉 No pending mistakes to review! Keep writing 💪")
         return
 
     REVIEW_STATE[uid] = {"queue": queue, "index": 0, "remembered": 0}
@@ -559,7 +603,7 @@ async def send_flashcard(uid: int, send):
 
     m = queue[idx]
     total = len(queue)
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Mostrar respuesta", callback_data=f"reveal_{idx}")]])
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔍 Show answer", callback_data=f"reveal_{idx}")]])
     await send(f"*Card {idx + 1}/{total}*\n❌ {m['wrong']}", parse_mode="Markdown", reply_markup=keyboard)
 
 
@@ -567,7 +611,7 @@ async def finish_review(uid: int, send):
     state = REVIEW_STATE.pop(uid, {})
     total = len(state.get("queue", []))
     remembered = state.get("remembered", 0)
-    await send(f"🏁 *Repaso completo!*\nRecordaste {remembered}/{total}", parse_mode="Markdown")
+    await send(f"🏁 *Review complete!*\nYou remembered {remembered}/{total}", parse_mode="Markdown")
 
 
 async def reveal_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -582,11 +626,32 @@ async def reveal_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     m = state["queue"][idx]
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Lo sabía", callback_data=f"knew_{idx}_1"),
-        InlineKeyboardButton("❌ No lo sabía", callback_data=f"knew_{idx}_0"),
+        InlineKeyboardButton("✅ I knew it", callback_data=f"knew_{idx}_1"),
+        InlineKeyboardButton("❌ I didn't know", callback_data=f"knew_{idx}_0"),
     ]])
     msg = f"✅ {m['correct']}\n💡 {m.get('explanation', '')}"
     await query.edit_message_text(msg, reply_markup=keyboard)
+
+
+async def cmd_reminder(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    hour, minute = scheduler.get_reminder_time()
+    if ctx.args and len(ctx.args) >= 1:
+        try:
+            parts = ctx.args[0].split(":")
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            scheduler.set_reminder_time(h, m)
+            scheduler.setup_daily_reminder(ctx.application)
+            await update.message.reply_text(f"✅ Daily reminder set for {h:02d}:{m:02d}.")
+            return
+        except (ValueError, IndexError):
+            await update.message.reply_text("Usage: /reminder [HH:MM]")
+            return
+    await update.message.reply_text(
+        f"⏰ Current reminder time: {hour:02d}:{minute:02d}\n"
+        f"Use `/reminder HH:MM` to change it (e.g. `/reminder 20:00`).",
+        parse_mode="Markdown",
+    )
 
 
 async def knew_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -609,9 +674,9 @@ async def knew_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if remembered:
         state["remembered"] += 1
-        await query.edit_message_text(f"✅ {m['correct']}\n💡 {m.get('explanation', '')}\n\n👍 ¡Bien hecho!")
+        await query.edit_message_text(f"✅ {m['correct']}\n💡 {m.get('explanation', '')}\n\n👍 Well done!")
     else:
-        await query.edit_message_text(f"✅ {m['correct']}\n💡 {m.get('explanation', '')}\n\n📌 Sigue practicando esta.")
+        await query.edit_message_text(f"✅ {m['correct']}\n💡 {m.get('explanation', '')}\n\n📌 Keep practicing this one.")
 
     state["index"] += 1
     await send_flashcard(uid, query.message.reply_text)
@@ -622,21 +687,25 @@ def main():
         print("ERROR: TELEGRAM_BOT_TOKEN not set in .env")
         return
 
-    auth = filters.User(user_id=int(CHAT_ID)) if CHAT_ID and CHAT_ID.isdigit() else None
-
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start, filters=auth))
-    app.add_handler(CommandHandler("help", start, filters=auth))
-    app.add_handler(CommandHandler("add", cmd_add, filters=auth))
-    app.add_handler(CommandHandler("quiz", cmd_quiz, filters=auth))
-    app.add_handler(CommandHandler("stats", cmd_stats, filters=auth))
-    app.add_handler(CommandHandler("explain", cmd_explain, filters=auth))
-    app.add_handler(CommandHandler("correct", cmd_correct, filters=auth))
-    app.add_handler(CommandHandler("recommend", cmd_recommend, filters=auth))
-    app.add_handler(CommandHandler("menu", cmd_menu, filters=auth))
-    app.add_handler(CommandHandler("mistakes", cmd_mistakes, filters=auth))
-    app.add_handler(CommandHandler("resettopics", cmd_reset_topics, filters=auth))
+    cid = int(CHAT_ID) if CHAT_ID and CHAT_ID.isdigit() else None
+    scheduler.setup_daily_reminder(app, chat_id=cid)
+    scheduler.setup_writing_topic_reminder(app, chat_id=cid)
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("add", cmd_add))
+    app.add_handler(CommandHandler("quiz", cmd_quiz))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("explain", cmd_explain))
+    app.add_handler(CommandHandler("correct", cmd_correct))
+    app.add_handler(CommandHandler("recommend", cmd_recommend))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("mistakes", cmd_mistakes))
+    app.add_handler(CommandHandler("resettopics", cmd_reset_topics))
+    app.add_handler(CommandHandler("model", cmd_model))
+    app.add_handler(CommandHandler("reminder", cmd_reminder))
     app.add_handler(CallbackQueryHandler(quiz_callback, pattern="^quiz_"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^mode_"))
     app.add_handler(CallbackQueryHandler(week_callback, pattern="^week_"))
@@ -644,9 +713,10 @@ def main():
     app.add_handler(CallbackQueryHandler(reset_topics_callback, pattern="^resettopics$"))
     app.add_handler(CallbackQueryHandler(reveal_callback, pattern="^reveal_"))
     app.add_handler(CallbackQueryHandler(knew_callback, pattern="^knew_"))
+    app.add_handler(CallbackQueryHandler(model_callback, pattern="^model_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print(f"Bot started for user {CHAT_ID}. Press Ctrl+C to stop.")
+    print("Bot started. No user filter — all users can interact. Press Ctrl+C to stop.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

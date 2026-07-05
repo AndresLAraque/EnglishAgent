@@ -17,11 +17,11 @@ class Question:
     def prompt(self) -> str:
         w = self.word_entry
         if self.q_type == "mc_word":
-            return f"¿Cuál es la palabra en inglés para «{w['translation']}»?"
+            return f"What is the English word for «{w['translation']}»?"
         elif self.q_type == "mc_translation":
-            return f"¿Cuál es la traducción de «{w['word']}»?"
+            return f"What is the translation of «{w['word']}»?"
         else:
-            return f"Escribe la palabra en inglés para «{w['translation']}»"
+            return f"Type the English word for «{w['translation']}»"
 
     @property
     def help_text(self) -> str:

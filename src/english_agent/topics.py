@@ -1,9 +1,9 @@
 WEEKS: dict[int, list[str]] = {
-    1: ["Mi trabajo", "Mi rutina", "Mis metas", "Mi ciudad", "Un problema que resolví"],
-    2: ["Tecnología", "Inteligencia artificial", "Economía", "Libros", "Salud"],
-    3: ["Opiniones", "Comparaciones", "Argumentos", "Ensayos", "Cartas formales", "Reportes"],
-    4: ["Diario personal", "Correos electrónicos", "Resúmenes", "Opiniones"],
-    5: ["Historias", "Explicaciones técnicas", "Reseñas", "Debates", "Resúmenes de artículos"],
+    1: ["My Job", "My Routine", "My Goals", "My City", "A Problem I Solved"],
+    2: ["Technology", "Artificial Intelligence", "Economy", "Books", "Health"],
+    3: ["Opinions", "Comparisons", "Arguments", "Essays", "Formal Letters", "Reports"],
+    4: ["Personal Diary", "Emails", "Summaries", "Opinions"],
+    5: ["Stories", "Technical Explanations", "Reviews", "Debates", "Article Summaries"],
 }
 
 CONNECTORS = [

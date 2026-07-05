@@ -23,12 +23,20 @@ def _client() -> Client:
 # ─── helpers ───────────────────────────────────────────────────────
 
 
-def _rich_text(text: str) -> list:
+def _rich_text(text) -> list:
+    if isinstance(text, list):
+        text = ", ".join(str(item) for item in text)
+    if not isinstance(text, str):
+        text = str(text or "")
     return [{"type": "text", "text": {"content": text}}]
 
 
-def _rich_text_long(text: str) -> list:
+def _rich_text_long(text) -> list:
     """Notion caps each rich_text object at 2000 chars; chunk longer text across multiple objects."""
+    if isinstance(text, list):
+        text = "\n".join(str(item) for item in text)
+    if not isinstance(text, str):
+        text = str(text or "")
     if not text:
         return []
     chunks = [text[i:i + 2000] for i in range(0, len(text), 2000)]
@@ -67,6 +75,10 @@ def _multi_select_prop(props: dict, key: str) -> list[str]:
 def _date_prop(props: dict, key: str) -> Optional[str]:
     d = props.get(key, {}).get("date")
     return d["start"] if d else None
+
+
+def _sort_desc(timestamp_field: str = "Date") -> list[dict]:
+    return [{"property": timestamp_field, "direction": "descending"}]
 
 
 # ─── WORDS ─────────────────────────────────────────────────────────
@@ -144,7 +156,7 @@ def word_list(status: Optional[str] = None, source: Optional[str] = None) -> lis
         filters.append({"property": "Source", "select": {"equals": source}})
     filter_obj = {"and": filters} if filters else None
 
-    res = c.databases.query(database_id=_WORDS_DB, filter=filter_obj)
+    res = c.databases.query(database_id=_WORDS_DB, filter=filter_obj, sorts=_sort_desc("Date Added"))
     return [_word_from_page(p) for p in res["results"]]
 
 
@@ -215,7 +227,7 @@ def _reading_from_page(page: dict) -> dict:
 
 def reading_list() -> list[dict]:
     c = _client()
-    res = c.databases.query(database_id=_READINGS_DB)
+    res = c.databases.query(database_id=_READINGS_DB, sorts=_sort_desc("Date Added"))
     return [_reading_from_page(p) for p in res["results"]]
 
 
@@ -325,7 +337,7 @@ def topic_list(week: Optional[int] = None, status: Optional[str] = None) -> list
         filters.append({"property": "Status", "select": {"equals": status}})
     filter_obj = {"and": filters} if filters else None
 
-    res = c.databases.query(database_id=_TOPICS_DB, filter=filter_obj)
+    res = c.databases.query(database_id=_TOPICS_DB, filter=filter_obj, sorts=_sort_desc("Last Practiced"))
     return [_topic_from_page(p) for p in res["results"]]
 
 
@@ -371,6 +383,11 @@ def _submission_from_page(page: dict) -> dict:
         "feedback": _text_prop(p, "Feedback"),
         "score": _num_prop(p, "Score"),
         "mistake_count": _num_prop(p, "Mistake Count"),
+        "strengths": _text_prop(p, "Strengths"),
+        "hour": _num_prop(p, "Hour"),
+        "provider": _select_prop(p, "Provider"),
+        "ai_model": _select_prop(p, "AI Model"),
+        "user_id": _num_prop(p, "User ID"),
         "date": _date_prop(p, "Date"),
     }
 
@@ -382,8 +399,14 @@ def submission_add(
     score: int,
     feedback: str,
     mistake_count: int,
+    strengths: Optional[list[str]] = None,
+    provider: str = "",
+    ai_model: str = "",
+    user_id: int = 0,
 ) -> dict:
+    from . import llm as _llm
     c = _client()
+    now = datetime.now(timezone.utc)
     today = date.today().isoformat()
     name = f"Week{topic['week']} - {topic['name']} - {today}"
     props = {
@@ -395,7 +418,12 @@ def submission_add(
         "Feedback": {"rich_text": _rich_text_long(feedback)},
         "Score": {"number": score},
         "Mistake Count": {"number": mistake_count},
-        "Date": {"date": {"start": today}},
+        "Strengths": {"rich_text": _rich_text_long(", ".join(strengths) if strengths else "")},
+        "Hour": {"number": now.hour},
+        "Provider": {"select": {"name": provider or _llm.get_active_provider()}},
+        "AI Model": {"select": {"name": ai_model or _llm.get_active_model()}},
+        "User ID": {"number": user_id},
+        "Date": {"date": {"start": now.isoformat()}},
     }
     page = c.pages.create(parent={"database_id": _SUBMISSIONS_DB}, properties=props)
     return _submission_from_page(page)
@@ -419,6 +447,12 @@ def _mistake_from_page(page: dict) -> dict:
         "last_reviewed": _date_prop(p, "Last Reviewed"),
         "submission_id": _relation_id(p, "Source Submission"),
     }
+
+
+def submission_list(limit: int = 50) -> list[dict]:
+    c = _client()
+    res = c.databases.query(database_id=_SUBMISSIONS_DB, sorts=_sort_desc("Date"))
+    return [_submission_from_page(p) for p in res["results"][:limit]]
 
 
 def mistake_add(wrong: str, correct: str, explanation: str, category: str, submission_id: str) -> dict:
@@ -445,7 +479,7 @@ def mistake_add(wrong: str, correct: str, explanation: str, category: str, submi
 def mistake_list(status: Optional[str] = None) -> list[dict]:
     c = _client()
     filter_obj = {"property": "Status", "select": {"equals": status}} if status else None
-    res = c.databases.query(database_id=_MISTAKES_DB, filter=filter_obj)
+    res = c.databases.query(database_id=_MISTAKES_DB, filter=filter_obj, sorts=_sort_desc("Date Added"))
     return [_mistake_from_page(p) for p in res["results"]]
 
 
