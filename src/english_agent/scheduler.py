@@ -105,3 +105,50 @@ def setup_writing_topic_reminder(app: Application, chat_id: Optional[int] = None
         name="weekly_topic_reminder",
     )
     logger.info("Weekly topic reminder scheduled for Mondays at 09:00")
+
+
+def setup_reading_reminder(app: Application, chat_id: Optional[int] = None):
+    """Sends a daily reading suggestion at 18:00."""
+    if chat_id is None:
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        cid = os.getenv("TELEGRAM_CHAT_ID", "")
+        chat_id = int(cid) if cid and cid.isdigit() else None
+
+    if not chat_id:
+        return
+
+    from . import topics
+
+    WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    def _today_reading_topic() -> str:
+        from datetime import datetime, timezone
+        weekday = datetime.now(timezone.utc).weekday()
+        all_topics = [t for week in topics.READING_WEEKS.values() for t in week]
+        t = all_topics[weekday % len(all_topics)] if all_topics else "General Interest"
+        day_name = WEEKDAY_NAMES[weekday]
+        return f"{day_name}'s topic: *{t}*"
+
+    async def _send_reading_prompt(ctx: ContextTypes.DEFAULT_TYPE):
+        msg = (
+            f"📖 *Daily Reading Practice*\n\n"
+            f"Today's theme: {_today_reading_topic()}\n\n"
+            f"Send /read to start a timed Cambridge/IELTS/TOEFL reading exercise with "
+            f"multiple-choice questions and keyword review.\n\n"
+            f"💡 _Just 20 minutes a day builds your reading stamina!_"
+        )
+        try:
+            await ctx.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+            logger.info(f"Reading reminder sent to {chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to send reading reminder: {e}")
+
+    app.job_queue.run_daily(
+        _send_reading_prompt,
+        time=time(hour=18, minute=0),
+        chat_id=chat_id,
+        name="daily_reading_reminder",
+    )
+    logger.info("Daily reading reminder scheduled at 18:00")

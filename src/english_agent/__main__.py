@@ -2,7 +2,7 @@ import sys
 import json
 import argparse
 
-from . import notion_db, quiz_engine, analyzer, vocab_extractor, notify, llm
+from . import notion_db, quiz_engine, analyzer, vocab_extractor, notify, llm, reading_game
 
 
 def _print(data):
@@ -117,6 +117,56 @@ def cmd_recommend(args):
     _print(result)
 
 
+# ─── READING GAME CLI ──────────────────────────────────────────────
+
+
+def cmd_reading_game_list(args):
+    games = notion_db.reading_game_list(topic=args.topic, level=args.level)
+    out = []
+    for g in games:
+        out.append({
+            "id": g["id"],
+            "name": g["name"],
+            "topic": g["topic"],
+            "level": g["level"],
+            "times_played": g["times_played"],
+            "best_score": g["best_score"],
+            "source": g["source"],
+        })
+    _print({"count": len(out), "games": out})
+
+
+def cmd_reading_game_generate(args):
+    topic = args.topic
+    level = args.level
+    print(f"Generating reading for topic '{topic}' at level '{level}'...")
+    try:
+        game = reading_game.fetch_or_create_game(topic=topic, level=level)
+        if game:
+            _print(game.to_dict())
+        else:
+            _print({"error": "Could not create reading game"})
+    except Exception as e:
+        _print({"error": str(e)})
+
+
+def cmd_reading_game_import(args):
+    print(f"Importing reading '{args.name}'...")
+    try:
+        game = reading_game.import_reading(
+            name=args.name,
+            content=args.content,
+            topic=args.topic or "General Interest",
+            level=args.level,
+        )
+        if game:
+            _print(game.to_dict())
+        else:
+            _print({"error": "Could not import reading"})
+    except Exception as e:
+        _print({"error": str(e)})
+
+
 def main():
     parser = argparse.ArgumentParser(prog="english-agent", description="English vocabulary learning assistant")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -210,6 +260,27 @@ def main():
     p = sub.add_parser("recommend", help="Get AI study recommendations")
     p.add_argument("--min-attempts", type=int, default=2, help="Min attempts for weak word detection")
     p.set_defaults(func=cmd_recommend)
+
+    # reading-game
+    rgp = sub.add_parser("reading-game", help="Reading game operations")
+    rgsub = rgp.add_subparsers(dest="action", required=True)
+
+    p = rgsub.add_parser("list", help="List reading games")
+    p.add_argument("--topic", help="Filter by topic")
+    p.add_argument("--level", help="Filter by level")
+    p.set_defaults(func=cmd_reading_game_list)
+
+    p = rgsub.add_parser("generate", help="Generate a new AI reading game")
+    p.add_argument("topic", help="Topic name")
+    p.add_argument("--level", default="IELTS (6.5-7.0)", help="Difficulty level")
+    p.set_defaults(func=cmd_reading_game_generate)
+
+    p = rgsub.add_parser("import", help="Import a reading from text")
+    p.add_argument("name", help="Name/title of the reading")
+    p.add_argument("content", help="Full text content")
+    p.add_argument("--topic", help="Topic for the reading")
+    p.add_argument("--level", default="General", help="Difficulty level")
+    p.set_defaults(func=cmd_reading_game_import)
 
     args = parser.parse_args()
     try:

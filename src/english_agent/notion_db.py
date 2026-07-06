@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -14,6 +15,7 @@ _ACTIVITY_DB = os.getenv("NOTION_ACTIVITY_DB", "")
 _TOPICS_DB = os.getenv("NOTION_TOPICS_DB", "")
 _SUBMISSIONS_DB = os.getenv("NOTION_SUBMISSIONS_DB", "")
 _MISTAKES_DB = os.getenv("NOTION_MISTAKES_DB", "")
+_READING_GAMES_DB = os.getenv("NOTION_READING_GAMES_DB", "")
 
 
 def _client() -> Client:
@@ -50,7 +52,9 @@ def _relation_id(props: dict, key: str) -> str:
 
 def _text_prop(props: dict, key: str, default: str = "") -> str:
     items = props.get(key, {}).get("rich_text", [])
-    return items[0]["text"]["content"] if items else default
+    if not items:
+        return default
+    return "".join(item["text"]["content"] for item in items)
 
 
 def _title_prop(props: dict, key: str = "Name", default: str = "") -> str:
@@ -506,3 +510,98 @@ def mistake_update_review(mistake_id: str, remembered: bool):
             "Status": {"select": {"name": status}},
         },
     )
+
+
+# ─── READING GAMES ──────────────────────────────────────────────────
+
+
+def _reading_game_from_page(page: dict) -> dict:
+    p = page["properties"]
+    return {
+        "id": page["id"],
+        "name": _title_prop(p, "Name"),
+        "content": _text_prop(p, "Content"),
+        "level": _select_prop(p, "Level"),
+        "topic": _select_prop(p, "Topic"),
+        "questions_json": _text_prop(p, "Questions"),
+        "key_words": [m["name"] for m in p.get("Key Words", {}).get("multi_select", [])],
+        "times_played": _num_prop(p, "Times Played"),
+        "best_score": _num_prop(p, "Best Score"),
+        "best_time": _num_prop(p, "Best Time"),
+        "date_added": _date_prop(p, "Date Added"),
+        "last_played": _date_prop(p, "Last Played"),
+        "source": _select_prop(p, "Source"),
+    }
+
+
+def reading_game_add(
+    name: str,
+    content: str,
+    level: str,
+    topic: str,
+    questions: list[dict],
+    key_words: list[str],
+    source: str = "ai_generated",
+) -> dict:
+    c = _client()
+    today = date.today().isoformat()
+    props = {
+        "Name": {"title": [{"text": {"content": name}}]},
+        "Content": {"rich_text": _rich_text_long(content)},
+        "Level": {"select": {"name": level}},
+        "Topic": {"select": {"name": topic}},
+        "Questions": {"rich_text": _rich_text_long(json.dumps(questions, ensure_ascii=False))},
+        "Key Words": {"multi_select": [{"name": kw} for kw in key_words]},
+        "Times Played": {"number": 0},
+        "Best Score": {"number": 0},
+        "Best Time": {"number": 0},
+        "Date Added": {"date": {"start": today}},
+        "Source": {"select": {"name": source}},
+    }
+    page = c.pages.create(parent={"database_id": _READING_GAMES_DB}, properties=props)
+    return _reading_game_from_page(page)
+
+
+def reading_game_list(topic: Optional[str] = None, level: Optional[str] = None) -> list[dict]:
+    c = _client()
+    filters = []
+    if topic:
+        filters.append({"property": "Topic", "select": {"equals": topic}})
+    if level:
+        filters.append({"property": "Level", "select": {"equals": level}})
+    filter_obj = {"and": filters} if filters else None
+    res = c.databases.query(
+        database_id=_READING_GAMES_DB,
+        filter=filter_obj,
+        sorts=_sort_desc("Date Added"),
+    )
+    return [_reading_game_from_page(p) for p in res["results"]]
+
+
+def reading_game_get(game_id: str) -> Optional[dict]:
+    c = _client()
+    page = c.pages.retrieve(game_id)
+    return _reading_game_from_page(page)
+
+
+def reading_game_update_play(game_id: str, score: int, time_seconds: int):
+    c = _client()
+    game = reading_game_get(game_id)
+    today = date.today().isoformat()
+    new_played = game["times_played"] + 1
+    new_best_score = max(game["best_score"], score)
+    new_best_time = min(game["best_time"], time_seconds) if game["best_time"] else time_seconds
+    c.pages.update(
+        page_id=game_id,
+        properties={
+            "Times Played": {"number": new_played},
+            "Best Score": {"number": new_best_score},
+            "Best Time": {"number": new_best_time},
+            "Last Played": {"date": {"start": today}},
+        },
+    )
+
+
+def reading_game_delete(game_id: str):
+    c = _client()
+    c.pages.update(page_id=game_id, archived=True)

@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -8,9 +9,10 @@ from telegram.ext import (
     filters, ContextTypes,
 )
 
-from . import notion_db, llm, quiz_engine, analyzer, writing_engine
+from . import notion_db, llm, quiz_engine, analyzer, writing_engine, reading_game
 from . import notify as notify_mod
 from . import scheduler
+from .topics import READING_WEEKS
 
 load_dotenv()
 
@@ -27,6 +29,8 @@ QUIZ_RESULTS: dict[int, list[bool]] = {}
 WRITING_STATE: dict[int, dict] = {}
 REVIEW_STATE: dict[int, dict] = {}
 
+READING_STATE: dict[int, dict] = {}
+
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     model_name = llm.get_active_model()
@@ -37,6 +41,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• /menu — Choose a study mode (vocabulary, writing, mistake review)\n"
         "• Send any English word → I save it and explain it\n"
         "• /quiz — Test your vocabulary\n"
+        "• /read — Timed IELTS reading practice\n"
         "• /correct <sentence> — Fix grammar\n"
         "• /stats — Your progress\n"
         "• /recommend — Study tips\n"
@@ -387,6 +392,7 @@ async def cmd_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📚 Vocabulary", callback_data="mode_vocab")],
         [InlineKeyboardButton("✍️ Writing", callback_data="mode_write")],
+        [InlineKeyboardButton("📖 Reading", callback_data="mode_read")],
         [InlineKeyboardButton("🔁 Mistake Review", callback_data="mode_review")],
         [InlineKeyboardButton("📊 Stats", callback_data="mode_stats")],
     ])
@@ -446,6 +452,8 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "• /add <word> — Add manually",
             parse_mode="Markdown",
         )
+    elif mode == "mode_read":
+        await show_reading_weeks(query.edit_message_text)
     elif mode == "mode_write":
         await show_week_menu(query)
     elif mode == "mode_review":
@@ -682,16 +690,317 @@ async def knew_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await send_flashcard(uid, query.message.reply_text)
 
 
+# ─── READING GAME ──────────────────────────────────────────────────
+
+
+async def cmd_read(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid in READING_STATE:
+        await update.message.reply_text("You already have a reading session in progress!")
+        return
+    await show_reading_weeks(update.message.reply_text)
+
+
+def _reading_week_emoji(week: int) -> str:
+    return ["📘", "📗", "📕", "📙", "📓"][(week - 1) % 5]
+
+
+async def show_reading_weeks(send):
+    weeks = sorted(READING_WEEKS.keys())
+    buttons = [
+        [InlineKeyboardButton(
+            f"{_reading_week_emoji(w)} Week {w} — {READING_WEEKS[w][0]}...",
+            callback_data=f"rweek_{w}",
+        )]
+        for w in weeks
+    ]
+    await send(
+        "📖 *Reading Practice*\n\nPick a week to explore Cambridge/IELTS/TOEFL-style readings.\n"
+        "Each week has different topics. You will get a timed passage "
+        "followed by multiple-choice questions and 6 key words to learn.",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
+
+async def reading_week_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    week = int(query.data.split("_", 1)[1])
+
+    entries = READING_WEEKS.get(week, [])
+    if not entries:
+        await query.edit_message_text(f"No topics for Week {week}.")
+        return
+
+    buttons = [
+        [InlineKeyboardButton(topic, callback_data=f"rtopic_{week}_{i}")]
+        for i, topic in enumerate(entries)
+    ]
+    await query.edit_message_text(
+        f"{_reading_week_emoji(week)} *Week {week}* — pick a topic:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
+
+async def reading_topic_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    parts = query.data.split("_")
+    week = int(parts[1])
+    topic_idx = int(parts[2])
+    topic_name = READING_WEEKS[week][topic_idx]
+
+    await query.edit_message_text(f"⏳ Generating a Cambridge/IELTS reading on *{topic_name}*...", parse_mode="Markdown")
+    try:
+        game = reading_game.fetch_or_create_game(topic=topic_name)
+    except Exception as e:
+        await query.edit_message_text(f"Error: {e}")
+        return
+
+    if not game:
+        await query.edit_message_text("Could not create a reading game. Is the AI provider available?")
+        return
+
+    READING_STATE[uid] = {
+        "game": game,
+        "start_time": None,
+        "reading_shown": False,
+        "question_idx": 0,
+        "answers": [],
+    }
+
+    read_secs = reading_game.reading_time_seconds(game.content)
+    read_min = max(1, read_secs // 60)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"▶️ Start Reading ({read_min} min timer)", callback_data="reading_start")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="reading_cancel")],
+    ])
+    await query.edit_message_text(
+        f"📖 *{game.name}*\n\n"
+        f"Week {week} — {game.topic}\n"
+        f"Level: {game.level}\n"
+        f"Questions: {len(game.questions)}\n"
+        f"Times played: {game.times_played}\n\n"
+        f"When you press start, you will have {read_min} minutes to read the passage. "
+        f"After the timer expires, {len(game.questions)} multiple-choice questions will follow.",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+
+
+def _chunk_long_text(text: str, max_len: int = 3500) -> list[str]:
+    return [text[i:i + max_len] for i in range(0, len(text), max_len)]
+
+
+async def reading_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    state = READING_STATE.get(uid)
+    if not state:
+        return
+
+    game = state["game"]
+    state["start_time"] = datetime.now(timezone.utc)
+
+    chunks = _chunk_long_text(game.content)
+    for chunk in chunks:
+        await query.message.reply_text(chunk, parse_mode="Markdown")
+
+    read_secs = reading_game.reading_time_seconds(game.content)
+    ans_secs = reading_game.answer_time_seconds(len(game.questions))
+    await query.message.reply_text(
+        f"⏱️ *Reading time: ~{read_secs // 60} min ({read_secs}s)*\n"
+        f"⏱️ *Answer time: ~{ans_secs // 60} min ({ans_secs}s)*\n\n"
+        f"When you finish reading, click below to start the questions.\n"
+        f"Your answers will be timed.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Start Questions", callback_data="reading_questions")],
+        ]),
+        parse_mode="Markdown",
+    )
+    try:
+        await query.edit_message_reply_markup(None)
+    except Exception:
+        pass
+
+
+async def reading_questions_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    state = READING_STATE.get(uid)
+    if not state:
+        return
+
+    state["reading_shown"] = True
+    await send_reading_question(query, uid)
+
+
+async def send_reading_question(query, uid: int):
+    state = READING_STATE[uid]
+    game = state["game"]
+    idx = state["question_idx"]
+
+    if idx >= len(game.questions):
+        await finish_reading_game(query, uid)
+        return
+
+    q = game.questions[idx]
+    total = len(game.questions)
+    text = f"*Question {idx + 1}/{total}*\n\n{q['question']}"
+
+    options = q.get("options", [])
+    if options:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"{chr(65 + i)}. {opt}", callback_data=f"rd_ans_{i}")]
+            for i, opt in enumerate(options)
+        ])
+    else:
+        keyboard = None
+
+    await query.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+async def reading_answer_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    state = READING_STATE.get(uid)
+    if not state:
+        return
+
+    option_idx = int(query.data.split("_")[-1])
+    game = state["game"]
+    idx = state["question_idx"]
+    q = game.questions[idx]
+
+    options = q.get("options", [])
+    chosen_answer = options[option_idx] if option_idx < len(options) else ""
+    correct_answer = q.get("answer", "")
+    is_correct = chosen_answer.strip().lower() == correct_answer.strip().lower()
+
+    state["answers"].append(chosen_answer)
+    state["question_idx"] += 1
+
+    if is_correct:
+        await query.edit_message_text(f"✅ Correct!\n\n*{q['question']}*\n\n→ {correct_answer}", parse_mode="Markdown")
+    else:
+        await query.edit_message_text(
+            f"❌ Your answer: {chosen_answer}\n"
+            f"✅ Correct answer: *{correct_answer}*\n\n"
+            f"*{q['question']}*",
+            parse_mode="Markdown",
+        )
+
+    await send_reading_question(query, uid)
+
+
+async def finish_reading_game(query, uid: int):
+    state = READING_STATE.pop(uid, {})
+    game = state.get("game")
+    answers = state.get("answers", [])
+    start_time = state.get("start_time")
+
+    if not game:
+        await query.message.reply_text("Reading session ended.")
+        return
+
+    elapsed = 0
+    if start_time:
+        elapsed = int((datetime.now(timezone.utc) - start_time).total_seconds())
+
+    result = game.score_answers(answers)
+    minutes = elapsed // 60
+    seconds = elapsed % 60
+
+    try:
+        reading_game.update_play_stats(game.id, result["score"], elapsed)
+    except Exception as e:
+        logger.warning(f"Could not update play stats: {e}")
+
+    msg = (
+        f"🏁 *Reading Complete!*\n\n"
+        f"📖 *{game.name}*\n"
+        f"Score: {result['score']}/{result['total']} ({result['percentage']}%)\n"
+        f"Time: {minutes}m {seconds}s\n\n"
+    )
+
+    incorrect = [d for d in result["details"] if not d["is_correct"]]
+    if incorrect:
+        msg += "*Mistakes:*\n\n"
+        for d in incorrect[:3]:
+            msg += f"❌ {d['question']}\n"
+            msg += f"✅ *{d['correct_answer']}*\n\n"
+        if len(incorrect) > 3:
+            msg += f"_+{len(incorrect) - 3} more_\n\n"
+
+    if game.key_words:
+        msg += "*🔑 Key Words:*\n"
+        for kw in game.key_words:
+            msg += f"`{kw}` "
+        msg += "\n\n"
+
+    msg += "🎯 Keep practicing! Try other topics with /read"
+
+    await query.message.reply_text(msg, parse_mode="Markdown")
+
+    wrong_ids = [d for d in result["details"] if not d["is_correct"]]
+    for detail in wrong_ids:
+        question_text = detail["question"]
+        correct_ans = detail["correct_answer"]
+        await query.message.reply_text(
+            f"📝 *Error Review:*\n\n"
+            f"Q: {question_text}\n"
+            f"✅ Correct: {correct_ans}\n"
+            f"❌ Your answer: {detail['user_answer']}",
+            parse_mode="Markdown",
+        )
+
+
+async def reading_cancel_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    READING_STATE.pop(uid, None)
+    await query.edit_message_text("❌ Reading cancelled.")
+
+
+async def _set_bot_commands(app: Application):
+    commands = [
+        ("start", "Welcome message"),
+        ("menu", "Study modes: vocabulary, writing, reading, review"),
+        ("read", "Timed reading practice with MCQ"),
+        ("quiz", "Test your vocabulary"),
+        ("stats", "Your learning progress"),
+        ("mistakes", "Review writing mistakes"),
+        ("correct", "Fix grammar in a sentence"),
+        ("explain", "Explain a saved word"),
+        ("recommend", "Personalized study tips"),
+        ("add", "Add a word manually"),
+        ("model", "Switch AI model"),
+        ("reminder", "Set daily reminder time"),
+    ]
+    try:
+        await app.bot.set_my_commands(commands)
+    except Exception as e:
+        logger.warning(f"Could not set bot commands: {e}")
+
+
 def main():
     if not TOKEN:
         print("ERROR: TELEGRAM_BOT_TOKEN not set in .env")
         return
 
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(_set_bot_commands).build()
 
     cid = int(CHAT_ID) if CHAT_ID and CHAT_ID.isdigit() else None
     scheduler.setup_daily_reminder(app, chat_id=cid)
     scheduler.setup_writing_topic_reminder(app, chat_id=cid)
+    scheduler.setup_reading_reminder(app, chat_id=cid)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
@@ -706,6 +1015,7 @@ def main():
     app.add_handler(CommandHandler("resettopics", cmd_reset_topics))
     app.add_handler(CommandHandler("model", cmd_model))
     app.add_handler(CommandHandler("reminder", cmd_reminder))
+    app.add_handler(CommandHandler("read", cmd_read))
     app.add_handler(CallbackQueryHandler(quiz_callback, pattern="^quiz_"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^mode_"))
     app.add_handler(CallbackQueryHandler(week_callback, pattern="^week_"))
@@ -714,6 +1024,12 @@ def main():
     app.add_handler(CallbackQueryHandler(reveal_callback, pattern="^reveal_"))
     app.add_handler(CallbackQueryHandler(knew_callback, pattern="^knew_"))
     app.add_handler(CallbackQueryHandler(model_callback, pattern="^model_"))
+    app.add_handler(CallbackQueryHandler(reading_week_callback, pattern="^rweek_"))
+    app.add_handler(CallbackQueryHandler(reading_topic_callback, pattern="^rtopic_"))
+    app.add_handler(CallbackQueryHandler(reading_start_callback, pattern="^reading_start$"))
+    app.add_handler(CallbackQueryHandler(reading_questions_callback, pattern="^reading_questions$"))
+    app.add_handler(CallbackQueryHandler(reading_answer_callback, pattern="^rd_ans_"))
+    app.add_handler(CallbackQueryHandler(reading_cancel_callback, pattern="^reading_cancel$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("Bot started. No user filter — all users can interact. Press Ctrl+C to stop.")

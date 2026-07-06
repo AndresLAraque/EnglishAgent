@@ -185,3 +185,52 @@ def grade_writing(topic: str, text: str) -> dict:
         f"No other text."
     )
     return _parse(_chat([{"role": "user", "content": prompt}], model=WRITING_MODEL, max_tokens=900))
+
+
+def engine_available() -> bool:
+    return bool(_ACTIVE_PROVIDER)
+
+
+def generate_reading(topic: str, level: str) -> dict:
+    prompt = (
+        f"Write a high-quality English reading text on the topic '{topic}' "
+        f"suitable for level '{level}'. The text must be 250-350 words long, "
+        f"simulate a Cambridge/IELTS/TOEFL exam passage, and have sophisticated yet natural syntax. "
+        f"Return ONLY valid JSON with these exact keys: "
+        f"title (a concise heading), content (the full reading text). "
+        f"No other text."
+    )
+    return _parse(_chat([{"role": "user", "content": prompt}], max_tokens=1200))
+
+
+def generate_questions(text: str, count: int = 6) -> list[dict]:
+    prompt = (
+        f"Based on the following reading text, create {count} multiple-choice questions "
+        f"to test reading comprehension. Each question must have exactly 4 options (A, B, C, D) "
+        f"with exactly one correct answer. The incorrect options must be plausible but wrong. "
+        f"Return ONLY valid JSON as a list of objects, each with keys: "
+        f"question (string), options (list of 4 strings), answer (string, the exact correct option text). "
+        f"No other text.\n\n"
+        f"--- TEXT ---\n{text}"
+    )
+    result = _parse(_chat([{"role": "user", "content": prompt}], max_tokens=2000))
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict) and "questions" in result:
+        return result["questions"]
+    return []
+
+
+def extract_key_words(text: str) -> list[str]:
+    prompt = (
+        f"From the following reading text, extract exactly 6 key words that are "
+        f"most important for understanding the passage. These should be words that an "
+        f"English learner should learn. "
+        f"Return ONLY valid JSON as a list of strings. "
+        f"No other text.\n\n"
+        f"--- TEXT ---\n{text}"
+    )
+    result = _parse(_chat([{"role": "user", "content": prompt}], max_tokens=300))
+    if isinstance(result, list):
+        return result
+    return []

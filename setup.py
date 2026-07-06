@@ -11,7 +11,7 @@ setup(
         "notion-client==1.0.1",
         "python-dotenv",
         "requests",
-        "python-telegram-bot>=20.0",
+        "python-telegram-bot[job-queue]>=20.0",
     ],
     entry_points={
         "console_scripts": [

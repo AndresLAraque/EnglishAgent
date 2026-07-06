@@ -197,9 +197,41 @@ def main():
         "Source Submission": {"relation": {"database_id": submissions_id, "type": "single_property", "single_property": {}}},
     })
 
+    # ── 7. Reading Games database ────────────────────────────
+    print("\nCreating 'Reading Games' database...")
+    topic_options = [{"name": v, "color": "blue"} for v in topics_data.READING_TOPICS.values()]
+    reading_game_id = create_database(client, parent_id, "Reading Games", {
+        "Name": {"title": {}},
+        "Content": {"rich_text": {}},
+        "Level": {"select": {"options": [
+            {"name": "IELTS (4.0-5.0)", "color": "yellow"},
+            {"name": "IELTS (5.5-6.0)", "color": "orange"},
+            {"name": "IELTS (6.5-7.0)", "color": "red"},
+            {"name": "IELTS (7.5-9.0)", "color": "purple"},
+            {"name": "TOEFL (40-60)", "color": "yellow"},
+            {"name": "TOEFL (61-80)", "color": "orange"},
+            {"name": "TOEFL (81-100)", "color": "red"},
+            {"name": "TOEFL (101-120)", "color": "purple"},
+            {"name": "General", "color": "green"},
+        ]}},
+        "Topic": {"select": {"options": topic_options}},
+        "Questions": {"rich_text": {}},
+        "Key Words": {"multi_select": {}},
+        "Times Played": {"number": {}},
+        "Best Score": {"number": {}},
+        "Best Time": {"number": {}},
+        "Date Added": {"date": {}},
+        "Last Played": {"date": {}},
+        "Source": {"select": {"options": [
+            {"name": "ai_generated", "color": "blue"},
+            {"name": "imported", "color": "green"},
+        ]}},
+    })
+    print(f"  ✅ Reading Games DB ID: {reading_game_id}")
+
     print()
     print("=" * 60)
-    print("All 6 databases created successfully!")
+    print("All 7 databases created successfully!")
     print()
     print("Add these to your .env file:")
     print(f"NOTION_WORDS_DB={words_id}")
@@ -208,6 +240,7 @@ def main():
     print(f"NOTION_TOPICS_DB={topics_id}")
     print(f"NOTION_SUBMISSIONS_DB={submissions_id}")
     print(f"NOTION_MISTAKES_DB={mistakes_id}")
+    print(f"NOTION_READING_GAMES_DB={reading_game_id}")
     print("=" * 60)
 
 
